@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: demo3
+
+server:
+  port: 3712
+
+socket:
+  host: 0.0.0.0
+  port: 9558
+
+logging:
+  level:
+    com.serotonin: info
+    com.serotonin.modbus4j: info
+    com.serotonin.modbus4j.sero.messaging: info
