@@ -32,6 +32,10 @@ public class Gs8000Event {
         return switch (eventType) {
             case 0x01 -> "火警";
             case 0x02 -> "故障";
+            case 0x03 -> "启动";
+            case 0x04 -> "停动";
+            case 0x05 -> "隔离";
+            case 0x06 -> "释放";
             case 0x07 -> "监管";
             case 0x08 -> "反馈";
             case 0x09 -> "动作";

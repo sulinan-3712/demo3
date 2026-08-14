@@ -231,7 +231,10 @@ public class Gs8000ModbusService {
         consecutiveFailures.set(0);
 
         // 定时轮询（文档要求 >300ms，默认500ms）
-        pollTask = scheduler.scheduleAtFixedRate(
+        // 使用 scheduleWithFixedDelay：上次执行完全结束后才安排下一次。
+        // 因 modbus.timeout(默认2000ms) 大于轮询间隔，从站无响应时一次轮询可耗时数秒，
+        // 若用 scheduleAtFixedRate 会堆积多个未完成的轮询，多线程同时读写串口导致帧交错损坏。
+        pollTask = scheduler.scheduleWithFixedDelay(
                 this::pollAndProcess,
                 1000,  // 延迟1秒启动（给设备稳定时间）
                 config.getPollIntervalMillis(),
@@ -288,12 +291,21 @@ public class Gs8000ModbusService {
         log.info("========== 开始轮询 ==========");
 
         try {
-            // 1. 读取 40001~40004 (偏移 0x0000)
+            // 1. 读取 40001~40004 (偏移 0x0000)，事件读取后寄存器将被清空（文档第2章）
             ReadHoldingRegistersResponse response = readRegisters(0x0000, 4);
 
+            // 2. 主查询出错（超时/通信异常/异常应答）时，按文档第5章通信流程改读
+            //    事件池映射 40005~40008（偏移 0x0004）：事件池不会因读取被清空，
+            //    可重新取回同一事件，避免事件因"读后清空"机制永久丢失
+            if (response == null || response.isException()) {
+                log.warn("主查询 40001~40004 失败（{}），改读事件池 40005~40008 恢复事件...",
+                        response == null ? "无响应" : "异常应答: " + response.getExceptionMessage());
+                response = readRegisters(0x0004, 4);
+            }
+
             if (response == null) {
-                // 具体原因（超时/通信异常）已在 readRegisters 中输出 ERROR 日志
-                log.warn("读取失败：未获得有效响应（原因见上方 ERROR 日志，portConnected={}）", portConnected);
+                // 具体原因（超时/通信异常）已在 readRegisters 中输出日志
+                log.warn("读取失败：主查询与事件池备份读取均未获得有效响应（portConnected={}）", portConnected);
                 consecutiveFailures.incrementAndGet();
                 checkAndReconnect();
                 return;
@@ -318,7 +330,8 @@ public class Gs8000ModbusService {
                 }
                 log.info("✅ 收到事件: {}", event);
             } else {
-                log.error("无新事件 (事件类型=0x00)");
+                // 0x00 = 无事件更新，是正常状态（文档表3），仅 debug 记录
+                log.debug("无新事件 (事件类型=0x00)");
             }
 
             // 重置失败计数
@@ -408,7 +421,9 @@ public class Gs8000ModbusService {
         int addrHundreds = reg1 & 0xFF;
         int addrTens = (reg2 >> 12) & 0x0F;
         int addrUnits = (reg2 >> 8) & 0x0F;
-        int controllerAddr = addrHundreds * 100 + addrTens * 10 + addrUnits;
+        // V3.43 修订：复位操作(0x0A)消息携带的控制器号无效，需忽略（历史复位记录也无控制器号）
+        boolean isResetEvent = eventType == 0x0A;
+        int controllerAddr = isResetEvent ? 0 : addrHundreds * 100 + addrTens * 10 + addrUnits;
 
         // 回路号
         int loopTens = (reg2 >> 4) & 0x0F;
@@ -419,7 +434,7 @@ public class Gs8000ModbusService {
         int codeHundreds = (reg3 >> 8) & 0xFF;
         int codeTens = (reg3 >> 4) & 0x0F;
         int codeUnits = reg3 & 0x0F;
-        int deviceCode = codeHundreds * 100 + codeTens * 10 + codeUnits;
+        int deviceCode = isResetEvent ? 0 : codeHundreds * 100 + codeTens * 10 + codeUnits;
 
         return new Gs8000Event(eventType, deviceType, deviceTypeName,
                 controllerAddr, loopNo, deviceCode);
@@ -515,7 +530,9 @@ public class Gs8000ModbusService {
             }
         } catch (Exception e) {
             if (isTimeoutException(e)) {
-                log.error("对时请求超时：串口已连接但从站无响应（{}ms）。请检查从站地址/接线/电源。",
+                // 文档第4.1.2节：超出范围的对时参数，控制器将不进行应答（超时属预期行为）
+                log.warn("对时请求超时（{}ms）：若参数在范围内请检查从站地址/接线/电源；"
+                                + "若参数超出范围，按文档约定控制器不会应答。",
                         config.getTimeoutMillis());
             } else {
                 log.error("对时请求发送失败", e);

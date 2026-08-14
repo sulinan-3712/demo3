@@ -55,6 +55,11 @@ public class ModbusConfig {
         int baud = Integer.getInteger("modbus.baud", 4800);
         int slave = Integer.getInteger("modbus.slave", 1);
         long poll = Long.getLong("modbus.poll", 500L);
+        // 文档附录三：两次轮询时间间隔必须大于 300ms，低于下限时钳制
+        if (poll < 300L) {
+            log.warn("轮询间隔 {}ms 低于文档要求的 300ms 下限，已钳制为 300ms", poll);
+            poll = 300L;
+        }
         int retry = Integer.getInteger("modbus.retry", 5);
         int timeout = Integer.getInteger("modbus.timeout", 2000);
 
